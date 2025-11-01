@@ -9,6 +9,8 @@ from src.utils.collision import check_ghost_collision
 from src.ui.hud import HUD
 from src.ui.menus import MenuManager
 from src.ui.particles import ParticleSystem
+from src.levels.level_manager import LevelManager
+from src.entities.powerup import PowerUpManager
 
 class Game:
     def __init__(self):
@@ -47,12 +49,16 @@ class Game:
         self.menu_manager = MenuManager(SCREEN_WIDTH, SCREEN_HEIGHT)
         self.particles = ParticleSystem()
 
+        # Game systems
+        self.level_manager = LevelManager()
+        self.powerup_manager = PowerUpManager()
+
         # Game state
         self.state = "menu"  # menu, playing, paused, game_over
-        self.level = 1
         self.combo = 1
         self.death_timer = 0
         self.respawn_delay = 2000  # 2 seconds
+        self.level_complete_timer = 0
 
     def run(self):
         """Main game loop"""
@@ -108,9 +114,11 @@ class Game:
             Clyde(16 * TILE_SIZE, ghost_house_y, self.maze)
         ]
 
-        self.level = 1
+        self.level_manager.reset()
+        self.powerup_manager = PowerUpManager()
         self.combo = 1
         self.death_timer = 0
+        self.level_complete_timer = 0
         self.particles = ParticleSystem()
         self.state = "playing"
 
@@ -145,6 +153,9 @@ class Game:
                 count=3
             )
 
+        # Update power-ups
+        self.powerup_manager.update(self.dt, self.maze, self.player, self.ghosts)
+
         # Update ghosts
         for ghost in self.ghosts:
             ghost.update(self.dt, self.player)
@@ -158,18 +169,80 @@ class Game:
         # Check ghost collisions
         collision_ghost = check_ghost_collision(self.player, self.ghosts)
         if collision_ghost:
-            self.player.lives -= 1
-            if self.player.lives > 0:
-                self.death_timer = self.respawn_delay
-                # Emit death particles
+            # Check if player has shield
+            if hasattr(self.player, 'has_shield') and self.player.has_shield:
+                # Shield protects player
+                self.player.has_shield = False
+                self.powerup_manager.remove_powerup_effect(self.player, self.ghosts)
+                # Emit shield break particles
                 self.particles.emit(
                     self.offset_x + self.player.x,
                     self.offset_y + self.player.y,
-                    NEON_PINK,
-                    count=10
+                    NEON_BLUE,
+                    count=15
                 )
             else:
-                self.state = "game_over"
+                # Player takes damage
+                self.player.lives -= 1
+                if self.player.lives > 0:
+                    self.death_timer = self.respawn_delay
+                    # Emit death particles
+                    self.particles.emit(
+                        self.offset_x + self.player.x,
+                        self.offset_y + self.player.y,
+                        NEON_PINK,
+                        count=10
+                    )
+                else:
+                    self.state = "game_over"
+
+        # Check level completion
+        pellets_remaining = sum(row.count(1) + row.count(2) for row in self.maze.layout)
+        if pellets_remaining == 0:
+            self.level_complete()
+
+    def level_complete(self):
+        """Handle level completion"""
+        # Award bonus points
+        self.player.score += 1000
+
+        # Advance level
+        self.level_manager.next_level()
+
+        # Create new maze
+        self.maze = Maze()
+
+        # Reset player position
+        player_start_x = 14 * TILE_SIZE
+        player_start_y = 23 * TILE_SIZE
+        self.player.x = player_start_x
+        self.player.y = player_start_y
+        self.player.direction = (0, 0)
+        self.player.next_direction = (0, 0)
+        self.player.powered_up = False
+        self.player.power_timer = 0
+
+        # Reset ghosts with increased difficulty
+        ghost_house_y = 14 * TILE_SIZE
+        self.ghosts = [
+            Blinky(13 * TILE_SIZE, ghost_house_y, self.maze),
+            Pinky(14 * TILE_SIZE, ghost_house_y, self.maze),
+            Inky(15 * TILE_SIZE, ghost_house_y, self.maze),
+            Clyde(16 * TILE_SIZE, ghost_house_y, self.maze)
+        ]
+        self.level_manager.adjust_ghost_difficulty(self.ghosts)
+
+        # Reset power-ups
+        self.powerup_manager = PowerUpManager()
+
+        # Emit celebration particles
+        for i in range(20):
+            self.particles.emit(
+                self.offset_x + self.player.x + (i - 10) * 20,
+                self.offset_y + self.player.y,
+                NEON_GREEN if i % 2 == 0 else NEON_YELLOW,
+                count=5
+            )
 
     def respawn_player(self):
         """Respawn player after death"""
@@ -191,13 +264,16 @@ class Game:
         if self.state == "menu":
             self.menu_manager.render_start_menu(self.screen)
         elif self.state == "game_over":
-            self.menu_manager.render_game_over(self.screen, self.player.score, self.level)
+            self.menu_manager.render_game_over(self.screen, self.player.score, self.level_manager.get_current_level())
         else:
             # Render game (playing or paused)
             self.screen.fill(BLACK)
 
             # Render maze
             self.maze.render(self.screen, self.offset_x, self.offset_y)
+
+            # Render power-ups
+            self.powerup_manager.render(self.screen, self.offset_x, self.offset_y)
 
             # Render ghosts
             for ghost in self.ghosts:
@@ -210,7 +286,14 @@ class Game:
             self.particles.render(self.screen)
 
             # Render HUD
-            self.hud.render(self.screen, self.player, self.level, self.combo)
+            self.hud.render(self.screen, self.player, self.level_manager.get_current_level(), self.combo)
+
+            # Render power-up indicator if active
+            if hasattr(self.player, 'powerup_type') and self.player.powerup_type:
+                font = pygame.font.Font(None, 24)
+                powerup_name = self.player.powerup_type.upper()
+                text = font.render(f"POWERUP: {powerup_name}", True, NEON_GREEN)
+                self.screen.blit(text, (SCREEN_WIDTH // 2 - 80, 850))
 
             # Render pause overlay if paused
             if self.state == "paused":
