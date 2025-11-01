@@ -6,6 +6,9 @@ from src.levels.maze import Maze
 from src.entities.player import Player
 from src.entities.ghost_ai import Blinky, Pinky, Inky, Clyde
 from src.utils.collision import check_ghost_collision
+from src.ui.hud import HUD
+from src.ui.menus import MenuManager
+from src.ui.particles import ParticleSystem
 
 class Game:
     def __init__(self):
@@ -39,7 +42,15 @@ class Game:
             Clyde(16 * TILE_SIZE, ghost_house_y, self.maze)
         ]
 
+        # UI Components
+        self.hud = HUD(SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.menu_manager = MenuManager(SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.particles = ParticleSystem()
+
         # Game state
+        self.state = "menu"  # menu, playing, paused, game_over
+        self.level = 1
+        self.combo = 1
         self.death_timer = 0
         self.respawn_delay = 2000  # 2 seconds
 
@@ -58,10 +69,60 @@ class Game:
                 self.running = False
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    self.running = False
+                    if self.state == "menu":
+                        self.running = False
+                    elif self.state == "game_over":
+                        self.running = False
+                    else:
+                        self.state = "menu"
+
+                elif event.key == pygame.K_SPACE:
+                    if self.state == "menu":
+                        self.start_game()
+                    elif self.state == "game_over":
+                        self.restart_game()
+
+                elif event.key == pygame.K_p:
+                    if self.state == "playing":
+                        self.state = "paused"
+                    elif self.state == "paused":
+                        self.state = "playing"
+
+    def start_game(self):
+        """Start a new game"""
+        self.state = "playing"
+
+    def restart_game(self):
+        """Restart game after game over"""
+        # Reset everything
+        self.maze = Maze()
+        player_start_x = 14 * TILE_SIZE
+        player_start_y = 23 * TILE_SIZE
+        self.player = Player(player_start_x, player_start_y, self.maze)
+
+        ghost_house_y = 14 * TILE_SIZE
+        self.ghosts = [
+            Blinky(13 * TILE_SIZE, ghost_house_y, self.maze),
+            Pinky(14 * TILE_SIZE, ghost_house_y, self.maze),
+            Inky(15 * TILE_SIZE, ghost_house_y, self.maze),
+            Clyde(16 * TILE_SIZE, ghost_house_y, self.maze)
+        ]
+
+        self.level = 1
+        self.combo = 1
+        self.death_timer = 0
+        self.particles = ParticleSystem()
+        self.state = "playing"
 
     def update(self):
         """Update game state"""
+        # Only update game when playing
+        if self.state != "playing":
+            return
+
+        # Update particles
+        self.particles.update()
+
         # Handle death timer
         if self.death_timer > 0:
             self.death_timer -= self.dt * 1000
@@ -69,8 +130,20 @@ class Game:
                 self.respawn_player()
             return
 
+        # Track previous score for particle effects
+        prev_score = self.player.score
+
         self.player.handle_input()
         self.player.update(self.dt)
+
+        # Emit particles on score change
+        if self.player.score > prev_score:
+            self.particles.emit(
+                self.offset_x + self.player.x,
+                self.offset_y + self.player.y,
+                NEON_YELLOW if not self.player.powered_up else NEON_GREEN,
+                count=3
+            )
 
         # Update ghosts
         for ghost in self.ghosts:
@@ -88,8 +161,15 @@ class Game:
             self.player.lives -= 1
             if self.player.lives > 0:
                 self.death_timer = self.respawn_delay
+                # Emit death particles
+                self.particles.emit(
+                    self.offset_x + self.player.x,
+                    self.offset_y + self.player.y,
+                    NEON_PINK,
+                    count=10
+                )
             else:
-                self.running = False  # Game over
+                self.state = "game_over"
 
     def respawn_player(self):
         """Respawn player after death"""
@@ -108,30 +188,33 @@ class Game:
 
     def render(self):
         """Render game"""
-        self.screen.fill(BLACK)
+        if self.state == "menu":
+            self.menu_manager.render_start_menu(self.screen)
+        elif self.state == "game_over":
+            self.menu_manager.render_game_over(self.screen, self.player.score, self.level)
+        else:
+            # Render game (playing or paused)
+            self.screen.fill(BLACK)
 
-        # Render maze
-        self.maze.render(self.screen, self.offset_x, self.offset_y)
+            # Render maze
+            self.maze.render(self.screen, self.offset_x, self.offset_y)
 
-        # Render ghosts
-        for ghost in self.ghosts:
-            ghost.render(self.screen, self.offset_x, self.offset_y)
+            # Render ghosts
+            for ghost in self.ghosts:
+                ghost.render(self.screen, self.offset_x, self.offset_y)
 
-        # Render player
-        self.player.render(self.screen, self.offset_x, self.offset_y)
+            # Render player
+            self.player.render(self.screen, self.offset_x, self.offset_y)
 
-        # Render HUD info (basic for now)
-        font = pygame.font.Font(None, 36)
-        score_text = font.render(f"SCORE: {self.player.score}", True, WHITE)
-        self.screen.blit(score_text, (20, 10))
+            # Render particles
+            self.particles.render(self.screen)
 
-        lives_text = font.render(f"LIVES: {self.player.lives}", True, WHITE)
-        self.screen.blit(lives_text, (SCREEN_WIDTH - 150, 10))
+            # Render HUD
+            self.hud.render(self.screen, self.player, self.level, self.combo)
 
-        # Show power-up status
-        if self.player.powered_up:
-            power_text = font.render(f"POWER: {int(self.player.power_timer / 1000)}s", True, NEON_YELLOW)
-            self.screen.blit(power_text, (SCREEN_WIDTH // 2 - 80, 10))
+            # Render pause overlay if paused
+            if self.state == "paused":
+                self.menu_manager.render_pause_menu(self.screen)
 
         pygame.display.flip()
 
